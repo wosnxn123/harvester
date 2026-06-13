@@ -16,7 +16,7 @@ Key Features:
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from core.enums import LoadBalanceStrategy, PipelineStage
+from core.enums import LoadBalanceStrategy, PipelineStage, SearchSourceType
 from core.models import Condition, Patterns, RateLimitConfig
 
 
@@ -245,6 +245,84 @@ class PersistenceConfig:
     simple: bool = False  # Write simple text files alongside NDJSON
 
 
+def _get_default_sources() -> Dict[str, "SearchSourceConfig"]:
+    """Get default built-in search source configuration."""
+    return {
+        SearchSourceType.GITHUB_WEB.value: SearchSourceConfig(
+            enabled=True,
+            fields="",
+            page_size=20,
+            max_pages=5,
+            max_results=100,
+            rate_limit=RateLimitConfig(base_rate=0.5, burst_limit=2, adaptive=True),
+        ),
+        SearchSourceType.GITHUB_API.value: SearchSourceConfig(
+            enabled=True,
+            fields="",
+            page_size=100,
+            max_pages=10,
+            max_results=1000,
+            rate_limit=RateLimitConfig(base_rate=0.15, burst_limit=3, adaptive=True),
+        ),
+        SearchSourceType.FOFA.value: SearchSourceConfig(
+            enabled=False,
+            base_url="https://fofa.info",
+            fields="host,ip,port,protocol,title,link",
+            page_size=100,
+            max_pages=5,
+            max_results=500,
+            use_next=True,
+            full=False,
+            rate_limit=RateLimitConfig(base_rate=1.0, burst_limit=3, adaptive=True),
+        ),
+        SearchSourceType.SHODAN.value: SearchSourceConfig(
+            enabled=False,
+            base_url="https://api.shodan.io",
+            fields="ip_str,port,hostnames,domains,transport,ssl,http.title,data",
+            page_size=100,
+            max_pages=3,
+            max_results=300,
+            minify=True,
+            rate_limit=RateLimitConfig(base_rate=1.0, burst_limit=2, adaptive=True),
+        ),
+    }
+
+
+@dataclass
+class SearchSourceConfig:
+    """Configuration for an external search source."""
+
+    enabled: bool = True
+    base_url: str = ""
+    api_key: str = ""
+    api_keys: List[str] = field(default_factory=list)
+    fields: str = ""
+    page_size: int = 100
+    max_pages: int = 1
+    max_results: int = 100
+    use_next: bool = False
+    full: bool = False
+    minify: bool = True
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    extra_params: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.api_key and self.api_key not in self.api_keys:
+            self.api_keys.insert(0, self.api_key)
+        self.api_keys = [key for key in self.api_keys if key and not str(key).startswith("your_")]
+        self.api_key = self.api_keys[0] if self.api_keys else ""
+        self.page_size = max(1, int(self.page_size or 1))
+        self.max_pages = max(1, int(self.max_pages or 1))
+        self.max_results = max(1, int(self.max_results or self.page_size))
+
+    def get_key(self, page: int = 1) -> str:
+        """Return a deterministic credential for the given page."""
+        if not self.api_keys:
+            return ""
+        index = max(page - 1, 0) % len(self.api_keys)
+        return self.api_keys[index]
+
+
 @dataclass
 class ApiConfig:
     """API configuration for a provider"""
@@ -283,6 +361,7 @@ class TaskConfig:
     enabled: bool = True
     provider_type: str = ""
     use_api: bool = False
+    sources: List[str] = field(default_factory=list)
     stages: StageConfig = field(default_factory=StageConfig)
     extras: Dict[str, Any] = field(default_factory=dict)
     api: ApiConfig = field(default_factory=ApiConfig)
@@ -359,6 +438,7 @@ class Config:
     display: DisplayConfig = field(default_factory=DisplayConfig)
     persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
     worker: WorkerManagerConfig = field(default_factory=WorkerManagerConfig)
+    sources: Dict[str, SearchSourceConfig] = field(default_factory=_get_default_sources)
     ratelimits: Dict[str, RateLimitConfig] = field(default_factory=dict)
     tasks: List[TaskConfig] = field(default_factory=list)
 
@@ -369,6 +449,8 @@ class Config:
                 "github_api": RateLimitConfig(base_rate=0.15, burst_limit=3, adaptive=True),
                 "github_web": RateLimitConfig(base_rate=0.5, burst_limit=2, adaptive=True),
             }
+        if not self.sources:
+            self.sources = _get_default_sources()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert Config object to dictionary
@@ -379,11 +461,11 @@ class Config:
         return {
             "global": self._dataclass_to_dict(self.global_config),
             "pipeline": self._dataclass_to_dict(self.pipeline),
-            "stats": self._dataclass_to_dict(self.stats),
             "monitoring": self._dataclass_to_dict(self.monitoring),
             "display": self._dataclass_to_dict(self.display),
             "persistence": self._dataclass_to_dict(self.persistence),
             "worker": self._dataclass_to_dict(self.worker),
+            "sources": {k: self._dataclass_to_dict(v) for k, v in self.sources.items()},
             "ratelimits": {k: self._dataclass_to_dict(v) for k, v in self.ratelimits.items()},
             "tasks": [self._dataclass_to_dict(task) for task in self.tasks],
         }

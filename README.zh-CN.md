@@ -36,8 +36,8 @@
 | ---------- | -------- | -------------------------- |
 | GitHub API | ✅ 已实现 | 完整API集成，支持速率限制  |
 | GitHub Web | ✅ 已实现 | 网页抓取，智能解析         |
-| FOFA       | 🚧 计划中 | 网络空间资产发现集成       |
-| Shodan     | 🚧 计划中 | IoT和网络设备枚举          |
+| FOFA       | ✅ 已实现 | API搜索与search-next分页   |
+| Shodan     | ✅ 已实现 | Host搜索API与字段过滤      |
 | 自定义API  | 🚧 计划中 | 通用REST/GraphQL API适配器 |
 
 ## 项目架构
@@ -628,6 +628,24 @@ sequenceDiagram
         auto_restore: true      # 启动时自动恢复状态
         shutdown_timeout: 30    # 关闭超时时间（秒）
 
+      # 搜索源配置
+      sources:
+        github_web:
+          enabled: true
+          page_size: 20
+          max_pages: 5
+          max_results: 100
+        fofa:
+          enabled: false        # 启用前设置 FOFA_KEY 或 api_key
+          page_size: 100
+          max_pages: 5
+          max_results: 500
+        shodan:
+          enabled: false        # 启用前设置 SHODAN_API_KEY(S)
+          page_size: 100
+          max_pages: 3
+          max_results: 300
+
       # 全局速率限制配置
       ratelimits:
         github_web:
@@ -641,6 +659,8 @@ sequenceDiagram
           enabled: true          # 是否启用
           provider_type: "openai"
           use_api: false         # 使用GitHub API进行搜索
+          sources:
+            - github_web          # 启用后可添加 fofa 或 shodan
           
           # 流水线阶段设置
           stages:
@@ -656,6 +676,9 @@ sequenceDiagram
           # 搜索条件
           conditions:
             - query: '"T3BlbkFJ"'
+              source_queries:
+                fofa: 'body="T3BlbkFJ"'
+                shodan: '"T3BlbkFJ"'
       ```
 
    2. **完整配置** - 包含所有高级选项：
@@ -665,6 +688,7 @@ sequenceDiagram
       - `monitoring`: 系统监控参数
       - `persistence`: 数据持久化设置
       - `worker`: 工作线程池配置
+      - `sources`: GitHub/FOFA/Shodan搜索源配置
       - `ratelimits`: 速率限制设置
       - `tasks`: 提供商任务配置
          ```yaml
@@ -689,6 +713,8 @@ sequenceDiagram
    > - [`examples/config-simple.yaml`](examples/config-simple.yaml) - 快速开始的基础配置
 
    `tasks` 部分是配置的核心，定义了要搜索哪些提供商以及如何处理它们。请参考上面基础配置示例中的完整tasks配置。
+
+   FOFA 和 Shodan 使用你自己的 API 凭据，可能消耗账号额度。建议先保守设置 `page_size`、`max_pages`、`max_results` 和 source `rate_limit`，确认查询准确后再提高吞吐。
 
    #### 主要配置选项
 
@@ -947,7 +973,7 @@ global:
 ## 注意事项
 
 1. **限制**
-   - 遵守Github API使用限制
+   - 遵守Github、FOFA、Shodan API使用限制
    - 合理配置速率限制
    - 注意内存使用
    - 谨慎处理敏感数据
@@ -963,10 +989,10 @@ global:
 ### 🏗️ 核心架构改进
 
 #### 数据源抽象
-- [ ] **抽象数据源接口**: 为所有数据源创建统一接口
-  - [ ] 定义`DataSourceProvider`基类，包含标准方法（`search`、`collect`、`validate`）
+- [x] **搜索源接口**: 为搜索源创建统一接口
+  - [x] 定义`SearchSource`基类，包含标准`search`输出
   - [ ] 为不同API格式实现适配器模式（REST、GraphQL、WebSocket）
-  - [ ] 添加数据源注册的配置模式
+  - [x] 添加内置搜索源注册的配置模式
   - [ ] 支持动态数据源加载和热插拔
 
 #### 阶段系统增强
@@ -986,12 +1012,12 @@ global:
 ### 🌐 数据源集成
 
 #### 网络测绘平台
-- [ ] **FOFA集成**
-  - [ ] 实现带认证的FOFA API客户端
-  - [ ] 添加FOFA特定查询优化
+- [x] **FOFA集成**
+  - [x] 实现带认证的FOFA API客户端
+  - [x] 支持FOFA search-next游标分页
 
-- [ ] **Shodan集成**
-  - [ ] 支持从Shadon查询与提取数据
+- [x] **Shodan集成**
+  - [x] 支持从Shodan查询与提取数据
 
 #### 通用网络源
 - [ ] **通用网页抓取器**

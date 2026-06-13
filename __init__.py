@@ -66,6 +66,7 @@ from core import (  # Task types; Enums; Interfaces; Exceptions
     ProviderTask,
     ResultType,
     SearchTask,
+    SearchSourceType,
     SystemState,
     ValidationError,
 )
@@ -120,6 +121,7 @@ __all__ = [
     # Enums
     "SystemState",
     "ResultType",
+    "SearchSourceType",
     "ErrorReason",
     # Interfaces
     "IProvider",

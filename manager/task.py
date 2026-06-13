@@ -14,6 +14,7 @@ from typing import Callable, Dict, List, Optional, Set
 import constant
 from config import load_config
 from config.schemas import Config, TaskConfig
+from core.enums import SearchSourceType
 from core.models import Condition, Patterns, ProviderTask, SearchTask, TaskRecoveryInfo
 from core.types import IProvider
 from search import client
@@ -221,6 +222,9 @@ class TaskManager(LifecycleManager, TaskDataProvider):
                 service_name = get_service_name(task_config.name)
                 rate_limits[service_name] = task_config.rate_limit
 
+        for source_name, source_config in self.config.sources.items():
+            rate_limits[source_name] = source_config.rate_limit
+
         # Create runtime config with provider rate limits (avoid mutating original config)
         runtime_config = copy.deepcopy(self.config)
         runtime_config.ratelimits = rate_limits
@@ -349,44 +353,42 @@ class TaskManager(LifecycleManager, TaskDataProvider):
                 )
                 continue
 
-            # Check if we have GitHub credentials
-            try:
-                # Try to get either token or session to verify availability
-                has_token = get_token() is not None
-                has_session = get_session() is not None
-                if (
-                    not has_token
-                    and not has_session
-                    or (task_config.use_api and not has_token)
-                    or (not task_config.use_api and not has_session)
-                ):
-                    logger.warning(
-                        f"Skipping search for provider {task_config.name} as no github token or session is provided"
-                    )
-                    continue
-            except Exception:
-                logger.warning(
-                    f"Skipping search for provider {task_config.name} as no github token or session is provided"
-                )
-                continue
-
             provider = self.providers.get(task_config.name)
             if not provider:
                 continue
 
+            sources = self._resolve_task_sources(task_config)
             for condition in provider.conditions:
-                # Create search task for each condition using its patterns
-                task = TaskFactory.create_search_task(
-                    provider=task_config.name,
-                    query=condition.query or condition.patterns.key_pattern,
-                    regex=condition.patterns.key_pattern,
-                    page=1,
-                    use_api=task_config.use_api,
-                    address_pattern=condition.patterns.address_pattern,
-                    endpoint_pattern=condition.patterns.endpoint_pattern,
-                    model_pattern=condition.patterns.model_pattern,
-                )
-                tasks.append(task)
+                for source in sources:
+                    source_config = self.config.sources.get(source)
+                    if not source_config or not source_config.enabled:
+                        logger.warning(f"Skipping disabled or unknown source {source} for provider {task_config.name}")
+                        continue
+
+                    if not self._has_source_credentials(source, source_config):
+                        logger.warning(f"Skipping source {source} for provider {task_config.name}: missing credential")
+                        continue
+
+                    query = condition.source_queries.get(source) or condition.query or condition.patterns.key_pattern
+                    if not query:
+                        logger.warning(f"Skipping empty query for provider {task_config.name}, source {source}")
+                        continue
+
+                    task = TaskFactory.create_search_task(
+                        provider=task_config.name,
+                        query=query,
+                        regex=condition.patterns.key_pattern,
+                        page=1,
+                        use_api=source == SearchSourceType.GITHUB_API.value,
+                        source=source,
+                        page_size=source_config.page_size,
+                        max_pages=source_config.max_pages,
+                        max_results=source_config.max_results,
+                        address_pattern=condition.patterns.address_pattern,
+                        endpoint_pattern=condition.patterns.endpoint_pattern,
+                        model_pattern=condition.patterns.model_pattern,
+                    )
+                    tasks.append(task)
 
         # Log summary of initial task creation
         if tasks:
@@ -400,6 +402,25 @@ class TaskManager(LifecycleManager, TaskDataProvider):
             )
 
         return tasks
+
+    def _resolve_task_sources(self, task_config: TaskConfig) -> List[str]:
+        """Resolve task search sources with legacy fallback."""
+        if task_config.sources:
+            return task_config.sources
+        return [SearchSourceType.GITHUB_API.value if task_config.use_api else SearchSourceType.GITHUB_WEB.value]
+
+    def _has_source_credentials(self, source: str, source_config) -> bool:
+        """Check credential availability for a source."""
+        try:
+            if source == SearchSourceType.GITHUB_API.value:
+                return get_token() is not None
+            if source == SearchSourceType.GITHUB_WEB.value:
+                return get_session() is not None
+            if source in (SearchSourceType.FOFA.value, SearchSourceType.SHODAN.value):
+                return bool(source_config.api_keys)
+        except Exception:
+            return False
+        return True
 
     def _add_recovered_tasks(self, recovery_info: TaskRecoveryInfo) -> None:
         """Add recovered tasks using enhanced TaskRecoveryStrategy"""

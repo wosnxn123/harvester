@@ -32,6 +32,7 @@ from .schemas import (
     MonitoringConfig,
     PersistenceConfig,
     PipelineConfig,
+    SearchSourceConfig,
     StageConfig,
     TaskConfig,
     WorkerManagerConfig,
@@ -105,6 +106,12 @@ class ConfigLoader:
         # Parse worker configuration
         if "worker" in data:
             config.worker = self._parse_worker_manager_config(data["worker"])
+
+        # Parse search sources before tasks so task validation can inspect them
+        if "sources" in data:
+            config.sources = self._parse_sources(data["sources"], config.sources)
+        else:
+            config.sources = self._parse_sources({}, config.sources)
 
         # Parse rate limits
         if "ratelimits" in data:
@@ -275,6 +282,81 @@ class ConfigLoader:
             )
         return rate_limits
 
+    def _parse_sources(
+        self, data: Dict[str, Any], defaults: Dict[str, SearchSourceConfig]
+    ) -> Dict[str, SearchSourceConfig]:
+        """Parse search source configuration with built-in defaults."""
+        sources = dict(defaults)
+        for name, source_data in (data or {}).items():
+            if not isinstance(source_data, dict):
+                source_data = {}
+            default = sources.get(name, SearchSourceConfig())
+            sources[name] = self._parse_source_config(name, source_data, default)
+
+        # Environment variables can enable FOFA/Shodan credentials without YAML edits.
+        if "fofa" in sources and not sources["fofa"].api_keys:
+            fofa_key = os.getenv("FOFA_KEY", "")
+            if fofa_key:
+                sources["fofa"].api_keys = [fofa_key.strip()]
+                sources["fofa"].api_key = sources["fofa"].api_keys[0]
+
+        if "shodan" in sources and not sources["shodan"].api_keys:
+            shodan_keys = os.getenv("SHODAN_API_KEYS") or os.getenv("SHODAN_API_KEY") or ""
+            keys = [key.strip() for key in shodan_keys.split(",") if key.strip()]
+            if keys:
+                sources["shodan"].api_keys = keys
+                sources["shodan"].api_key = keys[0]
+
+        return sources
+
+    def _parse_source_config(
+        self, name: str, data: Dict[str, Any], default: SearchSourceConfig
+    ) -> SearchSourceConfig:
+        """Parse one search source config."""
+        rate_limit_data = data.get("rate_limit", {})
+        if rate_limit_data:
+            rate_limit = RateLimitConfig(
+                base_rate=rate_limit_data.get("base_rate", default.rate_limit.base_rate),
+                burst_limit=rate_limit_data.get("burst_limit", default.rate_limit.burst_limit),
+                adaptive=rate_limit_data.get("adaptive", default.rate_limit.adaptive),
+                backoff_factor=rate_limit_data.get("backoff_factor", default.rate_limit.backoff_factor),
+                recovery_factor=rate_limit_data.get("recovery_factor", default.rate_limit.recovery_factor),
+                max_rate_multiplier=rate_limit_data.get(
+                    "max_rate_multiplier", default.rate_limit.max_rate_multiplier
+                ),
+                min_rate_multiplier=rate_limit_data.get(
+                    "min_rate_multiplier", default.rate_limit.min_rate_multiplier
+                ),
+            )
+        else:
+            rate_limit = default.rate_limit
+
+        api_keys = data.get("api_keys", default.api_keys)
+        if isinstance(api_keys, str):
+            api_keys = [key.strip() for key in api_keys.split(",") if key.strip()]
+        else:
+            api_keys = list(api_keys or [])
+
+        api_key = data.get("api_key", data.get("key", default.api_key))
+        if api_key and api_key not in api_keys:
+            api_keys = [api_key] + list(api_keys)
+
+        return SearchSourceConfig(
+            enabled=data.get("enabled", default.enabled),
+            base_url=data.get("base_url", default.base_url),
+            api_key=api_key,
+            api_keys=api_keys,
+            fields=data.get("fields", default.fields),
+            page_size=data.get("page_size", default.page_size),
+            max_pages=data.get("max_pages", default.max_pages),
+            max_results=data.get("max_results", default.max_results),
+            use_next=data.get("use_next", default.use_next),
+            full=data.get("full", default.full),
+            minify=data.get("minify", default.minify),
+            rate_limit=rate_limit,
+            extra_params=data.get("extra_params", default.extra_params),
+        )
+
     def _parse_task_config(self, data: Dict[str, Any]) -> TaskConfig:
         """Parse task configuration
 
@@ -338,6 +420,7 @@ class ConfigLoader:
             enabled=data.get("enabled", True),
             provider_type=data.get("provider_type", ""),
             use_api=data.get("use_api", False),
+            sources=data.get("sources", []),
             stages=stages,
             extras=data.get("extras", {}),
             api=api,

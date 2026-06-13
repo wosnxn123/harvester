@@ -15,6 +15,8 @@ Key Features:
 
 from typing import List
 
+from core.enums import SearchSourceType
+
 from .schemas import Config, LoadBalanceStrategy, TaskConfig
 
 
@@ -48,6 +50,9 @@ class ConfigValidator:
         # Validate tasks configuration
         self._validate_tasks_config(config)
 
+        # Validate search sources after tasks so only used sources require credentials
+        self._validate_sources_config(config)
+
         # Validate worker manager configuration
         self._validate_worker_manager_config(config)
 
@@ -74,11 +79,8 @@ class ConfigValidator:
         if not global_config.workspace:
             self.errors.append("Global workspace cannot be empty")
 
-        # Validate GitHub credentials
+        # Validate GitHub credential shape. Source-specific checks decide when they are required.
         credentials = global_config.github_credentials
-        if not credentials.sessions and not credentials.tokens:
-            self.errors.append("At least one GitHub session or token must be provided")
-
         # Validate load balance strategy
         if credentials.strategy not in LoadBalanceStrategy:
             self.errors.append(f"Invalid load balance strategy: {credentials.strategy}")
@@ -156,9 +158,9 @@ class ConfigValidator:
 
         # Validate individual tasks
         for task in config.tasks:
-            self._validate_task(task)
+            self._validate_task(task, config)
 
-    def _validate_task(self, task: TaskConfig) -> None:
+    def _validate_task(self, task: TaskConfig, config: Config) -> None:
         """Validate individual task configuration
 
         Args:
@@ -172,6 +174,10 @@ class ConfigValidator:
 
         if not task.provider_type:
             self.errors.append(f"Provider type cannot be empty for task: {task.name}")
+
+        for source in self._task_sources(task):
+            if source not in config.sources:
+                self.errors.append(f"Unknown search source '{source}' for task: {task.name}")
 
         # Validate stage dependencies
         try:
@@ -189,7 +195,56 @@ class ConfigValidator:
                     self.errors.append(f"Key pattern required for condition {i+1} in task: {task.name}")
 
                 if not condition.query and not condition.patterns.key_pattern:
-                    self.errors.append(f"Either query or key_pattern required for condition {i+1} in task: {task.name}")
+                    if not condition.source_queries:
+                        self.errors.append(
+                            f"Either query, source_queries, or key_pattern required for condition {i+1} in task: {task.name}"
+                        )
+
+    def _validate_sources_config(self, config: Config) -> None:
+        """Validate source configuration and credentials for used sources."""
+        if not config.sources:
+            self.errors.append("At least one search source must be configured")
+            return
+
+        for name, source in config.sources.items():
+            if source.page_size <= 0:
+                self.errors.append(f"Source {name} page_size must be positive")
+            if source.max_pages <= 0:
+                self.errors.append(f"Source {name} max_pages must be positive")
+            if source.max_results <= 0:
+                self.errors.append(f"Source {name} max_results must be positive")
+            if source.rate_limit.base_rate <= 0:
+                self.errors.append(f"Source {name} rate limit base_rate must be positive")
+            if source.rate_limit.burst_limit <= 0:
+                self.errors.append(f"Source {name} rate limit burst_limit must be positive")
+
+        used_sources = set()
+        for task in config.tasks:
+            if task.enabled and task.stages.search:
+                used_sources.update(self._task_sources(task))
+
+        for source_name in used_sources:
+            source = config.sources.get(source_name)
+            if not source:
+                continue
+            if not source.enabled:
+                self.errors.append(f"Search source '{source_name}' is used by an enabled task but is disabled")
+
+            if source_name == SearchSourceType.GITHUB_API.value:
+                if not config.global_config.github_credentials.tokens:
+                    self.errors.append("GitHub API source requires at least one GitHub token")
+            elif source_name == SearchSourceType.GITHUB_WEB.value:
+                if not config.global_config.github_credentials.sessions:
+                    self.errors.append("GitHub web source requires at least one GitHub session")
+            elif source_name in (SearchSourceType.FOFA.value, SearchSourceType.SHODAN.value):
+                if not source.api_keys:
+                    self.errors.append(f"Search source '{source_name}' requires at least one API key")
+
+    def _task_sources(self, task: TaskConfig) -> List[str]:
+        """Resolve task sources with legacy use_api fallback."""
+        if task.sources:
+            return task.sources
+        return [SearchSourceType.GITHUB_API.value if task.use_api else SearchSourceType.GITHUB_WEB.value]
 
     def _validate_worker_manager_config(self, config: Config) -> None:
         """Validate worker manager configuration

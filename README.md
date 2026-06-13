@@ -36,8 +36,8 @@ The system aims to build a **universal data acquisition framework** primarily ta
 | ----------- | ------------- | --------------------------------------- |
 | GitHub API  | ✅ Implemented | Full API integration with rate limiting |
 | GitHub Web  | ✅ Implemented | Web scraping with intelligent parsing   |
-| FOFA        | 🚧 Planned     | Cyberspace asset discovery integration  |
-| Shodan      | 🚧 Planned     | IoT and network device enumeration      |
+| FOFA        | ✅ Implemented | API search and search-next pagination   |
+| Shodan      | ✅ Implemented | Host search API with field filtering    |
 | Custom APIs | 🚧 Planned     | Generic REST/GraphQL API adapter        |
 
 ## Architecture
@@ -605,6 +605,7 @@ The system features a sophisticated **Query Optimization Engine** with mathemati
 
    Edit the configuration file:
    - Set your Github session token or API key
+   - Optionally set `FOFA_KEY`, `SHODAN_API_KEY`, or `SHODAN_API_KEYS`
    - Configure provider search patterns
    - Adjust rate limits and thread counts
 
@@ -640,6 +641,24 @@ The system features a sophisticated **Query Optimization Engine** with mathemati
         auto_restore: true      # Auto restore state on startup
         shutdown_timeout: 30    # Shutdown timeout in seconds
 
+      # Search source configuration
+      sources:
+        github_web:
+          enabled: true
+          page_size: 20
+          max_pages: 5
+          max_results: 100
+        fofa:
+          enabled: false        # Enable only with FOFA_KEY or api_key
+          page_size: 100
+          max_pages: 5
+          max_results: 500
+        shodan:
+          enabled: false        # Enable only with SHODAN_API_KEY(S)
+          page_size: 100
+          max_pages: 3
+          max_results: 300
+
       # Global rate limiting configuration
       ratelimits:
         github_web:
@@ -653,6 +672,8 @@ The system features a sophisticated **Query Optimization Engine** with mathemati
           enabled: true          # Enable/disable provider
           provider_type: "openai"
           use_api: false         # Use GitHub API for searching
+          sources:
+            - github_web          # Optional: add fofa or shodan when enabled
           
           # Pipeline stage settings
           stages:
@@ -668,6 +689,9 @@ The system features a sophisticated **Query Optimization Engine** with mathemati
           # Search conditions
           conditions:
             - query: '"T3BlbkFJ"'
+              source_queries:
+                fofa: 'body="T3BlbkFJ"'
+                shodan: '"T3BlbkFJ"'
       ```
 
    2. **Full Configuration** - Includes all advanced options:
@@ -677,6 +701,7 @@ The system features a sophisticated **Query Optimization Engine** with mathemati
       - `monitoring`: System monitoring parameters
       - `persistence`: Data persistence settings
       - `worker`: Worker pool configuration
+      - `sources`: GitHub/FOFA/Shodan search source settings
       - `ratelimits`: Rate limiting settings
       - `tasks`: Provider task configurations
 
@@ -687,6 +712,8 @@ The system features a sophisticated **Query Optimization Engine** with mathemati
    > - [`examples/config-simple.yaml`](examples/config-simple.yaml) - Basic configuration for quick start
 
    The `tasks` section is the core of the configuration, defining what providers to search and how to process them. Refer to the basic configuration example above for a complete tasks configuration.
+
+   FOFA and Shodan use your own API credentials and may consume account quota. Keep `page_size`, `max_pages`, `max_results`, and source `rate_limit` conservative until the query is tuned.
 
    #### Key Configuration Options
 
@@ -945,7 +972,7 @@ global:
 ## Important Notes
 
 1. **Limitations**
-   - Respect Github API usage limits
+   - Respect Github, FOFA, and Shodan API usage limits
    - Configure rate limits appropriately
    - Mind memory usage
    - Handle sensitive data carefully
@@ -961,10 +988,10 @@ global:
 ### 🏗️ Core Architecture Improvements
 
 #### Data Source Abstraction
-- [ ] **Abstract Data Source Interface**: Create a unified interface for all data sources
-  - [ ] Define `DataSourceProvider` base class with standard methods (`search`, `gather`, `validate`)
+- [x] **Search Source Interface**: Create a unified interface for search sources
+  - [x] Define `SearchSource` base class with standard `search` output
   - [ ] Implement adapter pattern for different API formats (REST, GraphQL, WebSocket)
-  - [ ] Add configuration schema for data source registration
+  - [x] Add configuration schema for built-in source registration
   - [ ] Support dynamic data source loading and hot-swapping
 
 #### Stage System Enhancement
@@ -984,12 +1011,12 @@ global:
 ### 🌐 Data Source Integrations
 
 #### Network Mapping Platforms
-- [ ] **FOFA Integration**
-  - [ ] Implement FOFA API client with authentication
-  - [ ] Add FOFA-specific query optimization
+- [x] **FOFA Integration**
+  - [x] Implement FOFA API client with authentication
+  - [x] Support FOFA search-next cursor pagination
 
-- [ ] **Shodan Integration**
-  - [ ] Support data querying and extraction from Shodan
+- [x] **Shodan Integration**
+  - [x] Support data querying and extraction from Shodan
 
 #### Generic Web Sources
 - [ ] **Universal Web Scraper**

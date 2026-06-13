@@ -116,6 +116,21 @@ class LoadBalanceStrategy(Enum):
 
 
 @unique
+class SearchSourceType(Enum):
+    """Built-in search source identifiers."""
+
+    GITHUB_WEB = "github_web"
+    GITHUB_API = "github_api"
+    FOFA = "fofa"
+    SHODAN = "shodan"
+
+    @classmethod
+    def github_sources(cls) -> set[str]:
+        """Return source names backed by GitHub."""
+        return {cls.GITHUB_WEB.value, cls.GITHUB_API.value}
+
+
+@unique
 class ResultType(Enum):
     """Types of results that can be stored
 

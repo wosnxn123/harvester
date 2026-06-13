@@ -35,6 +35,27 @@ persistence:
   # Shutdown timeout in seconds
   shutdown_timeout: 30
 
+# Search sources. Enable FOFA/Shodan only when you have API quota available.
+sources:
+  github_web:
+    enabled: true
+    page_size: 20
+    max_pages: 5
+    max_results: 100
+  fofa:
+    enabled: false
+    api_key: "your_fofa_key_here" # Or set FOFA_KEY
+    page_size: 100
+    max_pages: 5
+    max_results: 500
+  shodan:
+    enabled: false
+    api_keys:
+      - "your_shodan_key_here" # Or set SHODAN_API_KEY/SHODAN_API_KEYS
+    page_size: 100
+    max_pages: 3
+    max_results: 300
+
 # Global rate limiting configuration
 ratelimits:
   # GitHub web scraping limits
@@ -56,6 +77,10 @@ tasks:
     provider_type: "openai"
     # Use GitHub API for searching
     use_api: false
+    sources:
+      - github_web
+      # - fofa
+      # - shodan
     # Pipeline stage settings
     stages:
       search: true # Enable search stage
@@ -68,3 +93,6 @@ tasks:
     # Search conditions
     conditions:
       - query: '"T3BlbkFJ"'
+        source_queries:
+          fofa: 'body="T3BlbkFJ"'
+          shodan: '"T3BlbkFJ"'

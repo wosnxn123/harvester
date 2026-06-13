@@ -181,6 +181,48 @@ worker:
   # Enable worker adjustment recommendation logging
   log_recommendations: true
 
+# Search source configuration. FOFA/Shodan API calls consume provider-side quota;
+# keep max_pages/max_results aligned with your account limits.
+sources:
+  github_web:
+    enabled: true
+    page_size: 20
+    max_pages: 5
+    max_results: 100
+  github_api:
+    enabled: true
+    page_size: 100
+    max_pages: 10
+    max_results: 1000
+  fofa:
+    enabled: false
+    base_url: https://fofa.info
+    api_key: "your_fofa_key_here" # Or set FOFA_KEY
+    fields: host,ip,port,protocol,title,link
+    page_size: 100
+    max_pages: 5
+    max_results: 500
+    use_next: true
+    full: false
+    rate_limit:
+      base_rate: 1.0
+      burst_limit: 3
+      adaptive: true
+  shodan:
+    enabled: false
+    base_url: https://api.shodan.io
+    api_keys:
+      - "your_shodan_key_here" # Or set SHODAN_API_KEY/SHODAN_API_KEYS
+    fields: ip_str,port,hostnames,domains,transport,ssl,http.title,data
+    page_size: 100
+    max_pages: 3
+    max_results: 300
+    minify: true
+    rate_limit:
+      base_rate: 1.0
+      burst_limit: 2
+      adaptive: true
+
 # Global rate limiting configuration
 ratelimits:
   # GitHub API rate limits
@@ -199,6 +241,16 @@ ratelimits:
     burst_limit: 2
     # Enable adaptive rate limiting
     adaptive: true
+  # FOFA API limits
+  fofa:
+    base_rate: 1.0
+    burst_limit: 3
+    adaptive: true
+  # Shodan API limits
+  shodan:
+    base_rate: 1.0
+    burst_limit: 2
+    adaptive: true
 
 # Provider task configurations
 tasks:
@@ -206,6 +258,10 @@ tasks:
     enabled: true
     provider_type: openai # or openai_like
     use_api: false
+    sources:
+      - github_web
+      # - fofa
+      # - shodan
     stages:
       search: true
       gather: true
@@ -228,6 +284,9 @@ tasks:
       model_pattern: ""
     conditions:
       - query: '"T3BlbkFJ"'
+        source_queries:
+          fofa: 'body="T3BlbkFJ"'
+          shodan: '"T3BlbkFJ"'
     rate_limit:
       base_rate: 1.0
       burst_limit: 5

@@ -62,9 +62,6 @@ class Credentials:
             tokens: List of GitHub API tokens
             strategy: Load balancing strategy ("round_robin" or "random")
         """
-        if not sessions and not tokens:
-            raise ValueError("At least one session or token must be provided")
-
         self.sessions = sessions.copy() if sessions else []
         self.tokens = tokens.copy() if tokens else []
 

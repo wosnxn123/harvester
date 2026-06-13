@@ -7,7 +7,7 @@ Registers all standard pipeline stages with their dependencies.
 
 import math
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from constant.search import (
     API_LIMIT,
@@ -17,8 +17,7 @@ from constant.search import (
     WEB_MAX_PAGES,
     WEB_RESULTS_PER_PAGE,
 )
-from constant.system import SERVICE_TYPE_GITHUB_API, SERVICE_TYPE_GITHUB_WEB
-from core.enums import ErrorReason, PipelineStage, ResultType
+from core.enums import ErrorReason, PipelineStage, ResultType, SearchSourceType
 from core.models import (
     AcquisitionTask,
     CheckTask,
@@ -31,6 +30,7 @@ from core.models import (
 from core.types import IProvider
 from refine.engine import RefineEngine
 from search import client
+from search.source import create_source
 from tools.logger import get_logger
 from tools.utils import get_service_name, handle_exceptions
 
@@ -45,10 +45,10 @@ logger = get_logger("stage")
     name=PipelineStage.SEARCH.value,
     depends_on=[],
     produces_for=[PipelineStage.GATHER.value, PipelineStage.CHECK.value],
-    description="Search GitHub for potential API keys",
+    description="Search configured sources for potential API keys",
 )
 class SearchStage(BasePipelineStage):
-    """Pipeline stage for searching GitHub with pure functional processing"""
+    """Pipeline stage for searching configured sources with pure functional processing"""
 
     def __init__(self, resources: StageResources, handler: OutputHandler, **kwargs):
         super().__init__(PipelineStage.SEARCH.value, resources, handler, **kwargs)
@@ -57,7 +57,8 @@ class SearchStage(BasePipelineStage):
         """Generate unique task identifier for deduplication"""
         search_task = task if isinstance(task, SearchTask) else SearchTask()
         return (
-            f"{PipelineStage.SEARCH.value}:{task.provider}:{search_task.query}:{search_task.page}:{search_task.regex}"
+            f"{PipelineStage.SEARCH.value}:{task.provider}:{search_task.source}:{search_task.query}:"
+            f"{search_task.page}:{search_task.cursor}:{search_task.regex}"
         )
 
     def _validate_task_type(self, task: ProviderTask) -> bool:
@@ -78,6 +79,11 @@ class SearchStage(BasePipelineStage):
             logger.warning(f"[{self.name}] empty query for provider: {task.provider}")
             return False
 
+        source_config = self.resources.config.sources.get(search_task.source)
+        if not source_config or not source_config.enabled:
+            logger.warning(f"[{self.name}] disabled or unknown search source: {search_task.source}")
+            return False
+
         return True
 
     def _execute_task(self, task: ProviderTask) -> Optional[StageOutput]:
@@ -87,12 +93,13 @@ class SearchStage(BasePipelineStage):
     def _search_worker(self, task: SearchTask) -> Optional[StageOutput]:
         """Pure functional search worker"""
         try:
-            # Execute search based on page number
-            if task.page == 1:
-                results, content, total = self._execute_first_page_search(task)
-            else:
-                results, content = self._execute_page_search(task)
-                total = 0
+            if not self._apply_rate_limit(task.source):
+                return None
+
+            source = create_source(task.source)
+            search_result = source.search(task, self.resources)
+            results = search_result.links
+            content = search_result.content
 
             # Create output object
             output = StageOutput(task=task)
@@ -125,12 +132,11 @@ class SearchStage(BasePipelineStage):
                 # Add links to be saved
                 output.add_links(task.provider, results)
 
-            # Handle first page results for pagination/refinement
-            if task.page == 1 and total > 0:
-                self._handle_first_page_results(task, total, output)
+            self._handle_pagination(task, search_result.total, search_result.next_cursor, output)
 
             logger.info(
-                f"[{self.name}] search completed for {task.provider}: {len(results) if results else 0} links, {len(keys)} keys"
+                f"[{self.name}] search completed for {task.provider} via {task.source}: "
+                f"{len(results) if results else 0} links, {len(keys)} keys"
             )
 
             return output
@@ -139,62 +145,8 @@ class SearchStage(BasePipelineStage):
             logger.error(f"[{self.name}] error, provider: {task.provider}, task: {task}, message: {e}")
             return None
 
-    def _execute_first_page_search(self, task: SearchTask) -> Tuple[List[str], str, int]:
-        """Execute first page search and get total count in single request"""
-        # Apply rate limiting
-        self._apply_rate_limit(task.use_api)
-
-        # Get auth via injected provider
-        if task.use_api:
-            auth_token = self.resources.auth.get_token()
-        else:
-            auth_token = self.resources.auth.get_session()
-
-        # Execute search with count - now returns content as well
-        results, total, content = client.search_with_count(
-            query=self._preprocess_query(task.query, task.use_api),
-            session=auth_token,
-            page=task.page,
-            with_api=task.use_api,
-            peer_page=API_RESULTS_PER_PAGE if task.use_api else WEB_RESULTS_PER_PAGE,
-        )
-
-        return results, content, total
-
-    def _preprocess_query(self, query: str, use_api: bool) -> str:
-        """Github Rest API search syntax don't support regex, so we need remove it if exists"""
-        if use_api:
-            keyword = RefineEngine.get_instance().clean_regex(query=query)
-            if keyword:
-                query = keyword
-
-        return query
-
-    def _execute_page_search(self, task: SearchTask) -> Tuple[List[str], str]:
-        """Execute subsequent page search in single request"""
-        # Apply rate limiting
-        self._apply_rate_limit(task.use_api)
-
-        # Get auth via injected provider
-        if task.use_api:
-            auth_token = self.resources.auth.get_token()
-        else:
-            auth_token = self.resources.auth.get_session()
-
-        # Execute search - now returns content as well
-        results, content = client.search_code(
-            query=self._preprocess_query(task.query, task.use_api),
-            session=auth_token,
-            page=task.page,
-            with_api=task.use_api,
-            peer_page=API_RESULTS_PER_PAGE if task.use_api else WEB_RESULTS_PER_PAGE,
-        )
-
-        return results, content
-
-    def _apply_rate_limit(self, use_api: bool) -> bool:
-        """Apply rate limiting for GitHub requests"""
-        service_type = SERVICE_TYPE_GITHUB_API if use_api else SERVICE_TYPE_GITHUB_WEB
+    def _apply_rate_limit(self, service_type: str) -> bool:
+        """Apply rate limiting for a search source."""
         if not self.resources.limiter.acquire(service_type):
             wait_time = self.resources.limiter.wait_time(service_type)
             if wait_time > 0:
@@ -202,19 +154,24 @@ class SearchStage(BasePipelineStage):
                 if not self.resources.limiter.acquire(service_type):
                     bucket = self.resources.limiter._get_bucket(service_type)
                     max_value = bucket.burst if bucket else "unknown"
-                    logger.info(
-                        f'[{self.name}] rate limit exceeded for Github {"Rest API" if use_api else "Web"}, max: {max_value}'
-                    )
+                    logger.info(f"[{self.name}] rate limit exceeded for source: {service_type}, max: {max_value}")
                     return False
         return True
 
-    def _handle_first_page_results(self, task: SearchTask, total: int, output: StageOutput) -> None:
-        """Handle first page results - decide pagination or refinement"""
-        limit = API_LIMIT if task.use_api else WEB_LIMIT
-        per_page = API_RESULTS_PER_PAGE if task.use_api else WEB_RESULTS_PER_PAGE
+    def _handle_pagination(self, task: SearchTask, total: int, next_cursor: str, output: StageOutput) -> None:
+        """Handle source pagination and GitHub query refinement."""
+        per_page = self._task_page_size(task)
+        limit = self._task_max_results(task)
 
-        # If needs refine query
-        if total > limit:
+        if next_cursor and self._can_fetch_next(task, per_page):
+            output.add_task(
+                self._clone_search_task(task, page=task.page + 1, cursor=next_cursor),
+                PipelineStage.SEARCH.value,
+            )
+            logger.info(f"[{self.name}] generated cursor task for provider: {task.provider}, source: {task.source}")
+            return
+
+        if self._is_github_source(task.source) and task.page == 1 and total > limit:
             # Regenerate the query with less data
             partitions = int(math.ceil(total / limit))
             queries = RefineEngine.get_instance().generate_queries(query=task.query, partitions=partitions)
@@ -232,25 +189,14 @@ class SearchStage(BasePipelineStage):
                     )
                     continue
 
-                refined_task = SearchTask(
-                    provider=task.provider,
-                    query=query,
-                    regex=task.regex,
-                    page=1,
-                    use_api=task.use_api,
-                    address_pattern=task.address_pattern,
-                    endpoint_pattern=task.endpoint_pattern,
-                    model_pattern=task.model_pattern,
-                )
-
+                refined_task = self._clone_search_task(task, query=query, page=1, cursor="")
                 output.add_task(refined_task, PipelineStage.SEARCH.value)
 
             logger.info(
                 f"[{self.name}] generated {len(queries)} refined tasks for provider: {task.provider}, query: {task.query}"
             )
 
-        # If needs pagination and not refining
-        elif total > per_page:
+        elif task.page == 1 and total > per_page and self._can_fetch_next(task, per_page):
             page_tasks = self._generate_page_tasks(task, total, per_page)
             for page_task in page_tasks:
                 output.add_task(page_task, PipelineStage.SEARCH.value)
@@ -260,27 +206,74 @@ class SearchStage(BasePipelineStage):
 
     def _generate_page_tasks(self, task: SearchTask, total: int, per_page: int) -> List[SearchTask]:
         """Generate pagination tasks"""
-        # Limit max pages
         max_pages = min(
             math.ceil(total / per_page),
-            API_MAX_PAGES if task.use_api else WEB_MAX_PAGES,
+            self._task_max_pages(task),
+            math.ceil(self._task_max_results(task) / per_page),
         )
 
         page_tasks: List[SearchTask] = []
-        for page in range(2, max_pages + 1):  # Start from page 2
-            page_task = SearchTask(
-                provider=task.provider,
-                query=task.query,
-                regex=task.regex,
-                page=page,
-                use_api=task.use_api,
-                address_pattern=task.address_pattern,
-                endpoint_pattern=task.endpoint_pattern,
-                model_pattern=task.model_pattern,
-            )
-            page_tasks.append(page_task)
+        for page in range(task.page + 1, max_pages + 1):
+            page_tasks.append(self._clone_search_task(task, page=page, cursor=""))
 
         return page_tasks
+
+    def _clone_search_task(self, task: SearchTask, **overrides) -> SearchTask:
+        """Clone a search task with targeted overrides."""
+        values = {
+            "provider": task.provider,
+            "query": task.query,
+            "regex": task.regex,
+            "page": task.page,
+            "use_api": task.use_api,
+            "source": task.source,
+            "cursor": task.cursor,
+            "page_size": task.page_size,
+            "max_pages": task.max_pages,
+            "max_results": task.max_results,
+            "address_pattern": task.address_pattern,
+            "endpoint_pattern": task.endpoint_pattern,
+            "model_pattern": task.model_pattern,
+        }
+        values.update(overrides)
+        return SearchTask(**values)
+
+    def _task_page_size(self, task: SearchTask) -> int:
+        if task.page_size > 0:
+            return task.page_size
+        if task.source == SearchSourceType.GITHUB_API.value:
+            return API_RESULTS_PER_PAGE
+        if task.source == SearchSourceType.GITHUB_WEB.value:
+            return WEB_RESULTS_PER_PAGE
+        source_config = self.resources.config.sources.get(task.source)
+        return source_config.page_size if source_config else 100
+
+    def _task_max_pages(self, task: SearchTask) -> int:
+        if task.max_pages > 0:
+            return task.max_pages
+        if task.source == SearchSourceType.GITHUB_API.value:
+            return API_MAX_PAGES
+        if task.source == SearchSourceType.GITHUB_WEB.value:
+            return WEB_MAX_PAGES
+        source_config = self.resources.config.sources.get(task.source)
+        return source_config.max_pages if source_config else 1
+
+    def _task_max_results(self, task: SearchTask) -> int:
+        if task.max_results > 0:
+            return task.max_results
+        if task.source == SearchSourceType.GITHUB_API.value:
+            return API_LIMIT
+        if task.source == SearchSourceType.GITHUB_WEB.value:
+            return WEB_LIMIT
+        source_config = self.resources.config.sources.get(task.source)
+        return source_config.max_results if source_config else self._task_page_size(task)
+
+    def _can_fetch_next(self, task: SearchTask, per_page: int) -> bool:
+        next_page = task.page + 1
+        return next_page <= self._task_max_pages(task) and task.page * per_page < self._task_max_results(task)
+
+    def _is_github_source(self, source: str) -> bool:
+        return source in SearchSourceType.github_sources()
 
     @handle_exceptions(default_result=[], log_level="error")
     def _extract_keys_from_content(self, content: str, task: SearchTask) -> List[Service]:

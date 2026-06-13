@@ -38,6 +38,8 @@ def get_default_config() -> Dict[str, Any]:
         {
             "github_api": {"base_rate": 1.0, "burst_limit": 5, "adaptive": True},
             "github_web": {"base_rate": 2.0, "burst_limit": 3, "adaptive": False},
+            "fofa": {"base_rate": 1.0, "burst_limit": 3, "adaptive": True},
+            "shodan": {"base_rate": 1.0, "burst_limit": 2, "adaptive": True},
         }
     )
 
@@ -49,6 +51,7 @@ def get_default_config() -> Dict[str, Any]:
                 "enabled": True,
                 "provider_type": "openai_like",
                 "use_api": False,
+                "sources": ["github_web"],
                 "stages": {
                     "search": True,
                     "gather": True,
@@ -73,7 +76,15 @@ def get_default_config() -> Dict[str, Any]:
                     "endpoint_pattern": "",
                     "model_pattern": "",
                 },
-                "conditions": [{"query": '"T3BlbkFJ"'}],
+                "conditions": [
+                    {
+                        "query": '"T3BlbkFJ"',
+                        "source_queries": {
+                            "fofa": 'body="T3BlbkFJ"',
+                            "shodan": '"T3BlbkFJ"',
+                        },
+                    }
+                ],
                 "rate_limit": {"base_rate": 2.0, "burst_limit": 10, "adaptive": True},
             }
         ]

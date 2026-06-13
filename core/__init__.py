@@ -22,7 +22,7 @@ Design Principles:
 from .auth import GithubAuthProvider, configure_auth, get_auth_provider
 
 # Domain enumerations
-from .enums import ErrorReason, ResultType, SystemState
+from .enums import ErrorReason, ResultType, SearchSourceType, SystemState
 
 # Business exceptions
 from .exceptions import (  # Base exceptions; Specific exceptions
@@ -67,6 +67,7 @@ __all__ = [
     # Enums
     "ErrorReason",
     "ResultType",
+    "SearchSourceType",
     "SystemState",
     # Exceptions
     "BaseError",

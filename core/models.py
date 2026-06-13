@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
-from .enums import ErrorReason
+from .enums import ErrorReason, SearchSourceType
 
 
 @dataclass
@@ -80,15 +80,24 @@ class ProviderTask(ABC):
 
 @dataclass
 class SearchTask(ProviderTask):
-    """Task for searching GitHub for potential API keys"""
+    """Task for searching a configured source for potential API keys"""
 
     query: str = ""
     regex: str = ""
     page: int = 1
     use_api: bool = False
+    source: str = ""
+    cursor: str = ""
+    page_size: int = 0
+    max_pages: int = 0
+    max_results: int = 0
     address_pattern: str = ""
     endpoint_pattern: str = ""
     model_pattern: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.source:
+            self.source = SearchSourceType.GITHUB_API.value if self.use_api else SearchSourceType.GITHUB_WEB.value
 
     def _serialize_data(self) -> Dict[str, Any]:
         return {
@@ -96,6 +105,11 @@ class SearchTask(ProviderTask):
             "regex": self.regex,
             "page": self.page,
             "use_api": self.use_api,
+            "source": self.source,
+            "cursor": self.cursor,
+            "page_size": self.page_size,
+            "max_pages": self.max_pages,
+            "max_results": self.max_results,
             "address_pattern": self.address_pattern,
             "endpoint_pattern": self.endpoint_pattern,
             "model_pattern": self.model_pattern,
@@ -106,6 +120,13 @@ class SearchTask(ProviderTask):
         self.regex = data.get("regex", "")
         self.page = data["page"]
         self.use_api = data.get("use_api", False)
+        self.source = data.get("source", "")
+        if not self.source:
+            self.source = SearchSourceType.GITHUB_API.value if self.use_api else SearchSourceType.GITHUB_WEB.value
+        self.cursor = data.get("cursor", "")
+        self.page_size = data.get("page_size", 0)
+        self.max_pages = data.get("max_pages", 0)
+        self.max_results = data.get("max_results", 0)
         self.address_pattern = data.get("address_pattern", "")
         self.endpoint_pattern = data.get("endpoint_pattern", "")
         self.model_pattern = data.get("model_pattern", "")
@@ -523,18 +544,26 @@ class Condition:
     """
 
     query: Optional[str] = None
+    source_queries: Dict[str, str] = field(default_factory=dict)
     patterns: Patterns = field(default_factory=Patterns)
     description: str = ""
     enabled: bool = True
 
     def __post_init__(self):
         """Validate condition after initialization"""
-        if not self.query and not self.patterns.key_pattern:
-            raise ValueError("Condition must have either query or key_pattern")
+        if self.source_queries is None:
+            self.source_queries = {}
+        if not self.query and not self.source_queries and not self.patterns.key_pattern:
+            raise ValueError("Condition must have query, source_queries, or key_pattern")
 
     def get_search_term(self) -> str:
         """Get the primary search term"""
-        return self.query or self.patterns.key_pattern or ""
+        if self.query:
+            return self.query
+        for query in self.source_queries.values():
+            if query:
+                return query
+        return self.patterns.key_pattern or ""
 
     def is_valid(self) -> bool:
         """Check if condition is valid and enabled"""
@@ -542,18 +571,29 @@ class Condition:
 
     def __hash__(self) -> int:
         """Hash based on query and patterns for use in sets and dicts"""
-        return hash((self.query, self.patterns.key_pattern))
+        return hash(
+            (
+                self.query,
+                tuple(sorted(self.source_queries.items())),
+                self.patterns.key_pattern,
+            )
+        )
 
     def __eq__(self, other: object) -> bool:
         """Equality comparison based on query and patterns"""
         if not isinstance(other, Condition):
             return False
-        return self.query == other.query and self.patterns == other.patterns
+        return (
+            self.query == other.query
+            and self.source_queries == other.source_queries
+            and self.patterns == other.patterns
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
         return {
             "query": self.query,
+            "source_queries": self.source_queries,
             "patterns": self.patterns.to_dict(),
             "description": self.description,
             "enabled": self.enabled,
@@ -567,6 +607,7 @@ class Condition:
 
         return cls(
             query=data.get("query"),
+            source_queries=data.get("source_queries", {}) or {},
             patterns=patterns,
             description=data.get("description", ""),
             enabled=data.get("enabled", True),

@@ -20,6 +20,7 @@ from .schemas import (
     MonitoringConfig,
     PipelineConfig,
     RateLimitConfig,
+    SearchSourceConfig,
     TaskConfig,
     WorkerManagerConfig,
 )
@@ -100,6 +101,10 @@ class ConfigAccessor:
             Optional[RateLimitConfig]: Rate limit configuration or None if not found
         """
         return self.config.ratelimits.get(name)
+
+    def get_search_source_config(self, name: str) -> Optional[SearchSourceConfig]:
+        """Get search source configuration by name."""
+        return self.config.sources.get(name)
 
     def get_github_sessions(self) -> list[str]:
         """Get GitHub session tokens
